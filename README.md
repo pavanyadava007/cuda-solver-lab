@@ -4,15 +4,17 @@ Conjugate Gradient and Jacobi solvers for the 2D Poisson equation, written as a
 GPU performance study: a serial C++ reference, OpenMP, eight hand-written CUDA
 variants (CSR scalar / vector SpMV, matrix-free stencil, warp-shuffle
 reductions, fused kernels, CUDA Graphs), cuSPARSE + cuBLAS as the library
-reference, three Jacobi stencil kernels, and a Fortran OpenACC version that runs
-on the GPU through gfortran's nvptx offloading. Every variant is checked
+reference, three Jacobi stencil kernels, and a Fortran OpenACC version built
+with both gfortran (nvptx offloading) and NVIDIA's nvfortran, plus an nvfortran
+`do concurrent` (`-stdpar=gpu`) build of the same loops. Every variant is checked
 against the CPU reference and an analytic solution, every timing is turned into
 bandwidth and placed on a measured roofline, and the key kernels are profiled
 with Nsight Compute.
 
 All numbers below are produced by `./run_all.sh` on one machine: NVIDIA L4
 (Ada, sm_89, 24 GB GDDR6 with ECC on, 48 MB L2), driver 580, CUDA 12.9,
-AMD EPYC 7R13 (16 cores / 32 threads), gcc/gfortran 11.5. They are copied into
+AMD EPYC 7R13 (16 cores / 32 threads), gcc/gfortran 11.5, NVIDIA HPC SDK 26.9
+(nvfortran, using the same CUDA 12.9). They are copied into
 this file by `scripts/make_report.py` from the raw CSV files in `results/raw/`
 and the Nsight exports in `results/ncu/` and `results/nsys/`; none are typed
 by hand.
@@ -36,10 +38,10 @@ one iteration, see `docs/DEVLOG.md`). FP64 throughout.
 | `src/cuda/cg_cuda.cu` | GPU CG driver: variants, CUDA Graph capture, cuSPARSE/cuBLAS path, timing, checks |
 | `src/cuda/jacobi.cu` | Jacobi: naive, shared-memory tile, register streaming, CPU OpenMP baseline |
 | `src/cuda/bw_probe.cu` | measured ceilings: copy / triad / read / write bandwidth, FP64 and FP32 FMA throughput |
-| `src/acc/cg_acc.F90` | matrix-free CG in Fortran + OpenACC (`cg_acc_gpu`) and the same file serial (`cg_acc_host`) |
-| `tests/` | ctest helpers: second-order convergence check, "OpenACC really ran on the GPU" check |
-| `scripts/` | `build.sh`, `sanitize.sh`, `bench.sh`, `profile.sh`, `make_report.py` |
-| `results/` | raw CSV, Nsight Compute / Systems exports, sanitizer logs, figures, `RESULTS.md` |
+| `src/acc/cg_acc.F90` | matrix-free CG in Fortran + OpenACC: gfortran (`cg_acc_gpu`), nvfortran (`cg_acc_nvf`), nvfortran `do concurrent` with `-DUSE_DC` (`cg_dc_nvf`), and the same file serial (`cg_acc_host`) |
+| `tests/` | ctest helpers: second-order convergence check, "Fortran really ran on the GPU" checks for gfortran and nvfortran |
+| `scripts/` | `build.sh`, `sanitize.sh`, `bench.sh`, `profile.sh`, `profile_fortran.sh`, `make_report.py` |
+| `results/` | raw CSV, Nsight Compute / Systems exports, sanitizer logs, nvfortran `-Minfo` output (`minfo/`), figures, `RESULTS.md` |
 | `docs/DEVLOG.md` | the bugs hit while building this and how each was found |
 
 ### CG variants
@@ -62,6 +64,7 @@ for the host.
 | `cusparse` | `cusparseSpMV` (CSR) + `cublasDdot/Daxpy/Dscal` in device pointer mode | 12 nnz + 20 N + 112 N |
 | CPU serial / OpenMP | CSR, same 6 steps as `csr_scalar` | 12 nnz + 20 N + 96 N |
 | Fortran OpenACC | matrix-free, three `parallel loop` regions with reductions | 16 N + 48 N + 24 N |
+| Fortran `do concurrent` | the same three loops as `do concurrent ... reduce(+:s)`, arrays in CUDA managed memory | same |
 
 N = unknowns, nnz = nonzeros (about 5 N). The model counts each array touched by
 a kernel once (perfect cache reuse of the SpMV source vector) and is the
@@ -86,6 +89,8 @@ old value), and merges the two axpys with the r.r reduction: 6 kernels and
   sweeps on a 257^2 grid (a size that is not a multiple of any tile).
 * `fortran_openacc_runs_on_gpu`: runs with `GOMP_DEBUG=1` and requires nvptx
   kernel launches in the log, so a silent host fallback fails the test.
+  `nvfortran_openacc_runs_on_gpu` and `nvfortran_do_concurrent_runs_on_gpu` do
+  the same with `NV_ACC_NOTIFY=1` (one "launch CUDA kernel" line per launch).
 * compute-sanitizer memcheck, racecheck, synccheck and initcheck for every CG
   variant and the Jacobi binary (`scripts/sanitize.sh`, logs in
   `results/sanitizer/`).
@@ -102,6 +107,10 @@ section below plus `results/RESULTS.md` and `results/figures/*.png`. About 15
 minutes on an idle L4. Requirements: CUDA 12.x (`CUDA_HOME`, default
 `/usr/local/cuda-12.9`), gcc/g++/gfortran with OpenMP, `gcc-offload-nvptx` for
 the OpenACC build (`-DBUILD_OPENACC=OFF` to skip), `uv` for the plotting venv.
+Optional: the NVIDIA HPC SDK for the nvfortran builds; CMake looks for
+`nvfortran` on `PATH`, under `$NVHPC_ROOT/compilers/bin` and in
+`~/opt/nvhpc` (see `docs/DEVLOG.md` for the trimmed tarball install) and skips
+those targets and tests if it is not found (`-DBUILD_NVFORTRAN=OFF` to skip).
 Nsight Compute needs GPU performance counter access; on this host that means
 passwordless `sudo` (see results). `bench.sh` waits until no other process
 uses the GPU and logs what it saw in `results/raw/gpu_contention.log`.
@@ -113,6 +122,7 @@ build/cg_cuda --variant all --n 512 --mode tol --tol 1e-10 --ref       # correct
 build/cg_cuda --variant fused_rows --n 4096 --mode fixed --iters 100   # timing
 build/jacobi --n 4096 --sweeps 100 --cpu
 build/cg_acc_gpu 1024 tol 100000 1e-8
+NV_ACC_NOTIFY=1 build/cg_acc_nvf 255 tol 100000 1e-10                  # prints every kernel launch
 ```
 
 ## Results
@@ -130,13 +140,13 @@ _All numbers: measured on NVIDIA L4, CUDA 12.9, 2026-10-03. Generated by `script
 | probe | best of 20 | % of 300 GB/s spec |
 |---|---|---|
 | copy_f64 | 232.4 GB/s | 77.5 % |
-| copy_f64x2 | 233.5 GB/s | 77.8 % |
-| triad_f64 | 237.5 GB/s | 79.2 % |
+| copy_f64x2 | 233.3 GB/s | 77.8 % |
+| triad_f64 | 237.8 GB/s | 79.3 % |
 | read_f64 | 261.0 GB/s | 87.0 % |
-| write_f64 | 240.6 GB/s | 80.2 % |
-| memcpy_d2d | 232.7 GB/s | 77.6 % |
+| write_f64 | 241.2 GB/s | 80.4 % |
+| memcpy_d2d | 232.3 GB/s | 77.5 % |
 | fma_f64 | 398 GFLOP/s |  |
-| fma_f32 | 25,463 GFLOP/s |  |
+| fma_f32 | 25,415 GFLOP/s |  |
 
 Best measured bandwidth: **261.0 GB/s** (87.0 % of the 300 GB/s datasheet value; ECC is enabled on this GPU). FP64 FMA peak: **398 GFLOP/s** (FP32/FP64 = 64). FP64 ridge point = 398 / 261.0 = **1.53 flop/byte**.
 
@@ -144,63 +154,71 @@ Best measured bandwidth: **261.0 GB/s** (87.0 % of the 300 GB/s datasheet value;
 
 | implementation | 256^2 | 512^2 | 1024^2 | 2048^2 | 4096^2 |
 |---|---|---|---|---|---|
-| CPU serial (CSR) | 0.354 | 1.473 | 6.913 | 32.888 | 149.812 |
-| CPU OpenMP 16 thr (CSR) | 0.050 | 0.140 | 0.936 | 9.206 | 48.354 |
-| CPU OpenMP 32 thr (CSR) | 0.065 | 0.137 | 0.957 | 10.112 | 49.648 |
-| Fortran OpenACC gfortran, GPU | 2.688 | 3.630 | 3.626 | 4.526 | 10.824 |
-| CUDA CSR scalar | 0.026 | 0.046 | 0.524 | 2.860 | 12.719 |
-| CUDA CSR vector (32 lanes/row) | 0.089 | 0.297 | 1.372 | 6.494 | 28.005 |
-| CUDA CSR vector (4 lanes/row) | 0.031 | 0.060 | 0.530 | 2.822 | 12.265 |
-| CUDA matrix-free stencil | 0.025 | 0.039 | 0.117 | 1.601 | 8.021 |
-| CUDA stencil + CUDA Graph | 0.021 | 0.035 | 0.116 | 1.594 | 8.013 |
-| CUDA fused (2 kernels/iter) | 0.018 | 0.034 | 0.130 | 1.439 | 6.137 |
-| CUDA fused + CUDA Graph | 0.017 | 0.033 | 0.131 | 1.436 | 6.137 |
-| CUDA fused, row-strip SpMV (2 kernels/iter) | 0.017 | 0.032 | 0.111 | 1.471 | 5.838 |
-| CUDA fused row-strip + CUDA Graph | 0.016 | 0.030 | 0.113 | 1.468 | 5.851 |
-| cuSPARSE SpMV + cuBLAS | 0.045 | 0.082 | 0.395 | 3.178 | 13.977 |
+| CPU serial (CSR) | 0.355 | 1.456 | 6.911 | 31.628 | 149.644 |
+| CPU OpenMP 16 thr (CSR) | 0.051 | 0.141 | 0.938 | 9.427 | 47.801 |
+| CPU OpenMP 32 thr (CSR) | 0.069 | 0.145 | 1.013 | 10.022 | 52.209 |
+| Fortran OpenACC gfortran, GPU | 2.703 | 3.644 | 3.585 | 4.310 | 9.152 |
+| Fortran OpenACC nvfortran, GPU | 0.064 | 0.083 | 0.182 | 1.711 | 7.014 |
+| Fortran do concurrent nvfortran, GPU | 0.037 | 0.057 | 0.167 | 1.795 | 7.791 |
+| CUDA CSR scalar | 0.026 | 0.046 | 0.523 | 2.860 | 12.718 |
+| CUDA CSR vector (32 lanes/row) | 0.089 | 0.296 | 1.347 | 6.371 | 27.520 |
+| CUDA CSR vector (4 lanes/row) | 0.031 | 0.059 | 0.528 | 2.821 | 12.273 |
+| CUDA matrix-free stencil | 0.025 | 0.038 | 0.114 | 1.600 | 8.018 |
+| CUDA stencil + CUDA Graph | 0.021 | 0.034 | 0.121 | 1.592 | 8.013 |
+| CUDA fused (2 kernels/iter) | 0.018 | 0.033 | 0.124 | 1.437 | 6.141 |
+| CUDA fused + CUDA Graph | 0.017 | 0.032 | 0.131 | 1.437 | 6.143 |
+| CUDA fused, row-strip SpMV (2 kernels/iter) | 0.017 | 0.032 | 0.113 | 1.468 | 5.848 |
+| CUDA fused row-strip + CUDA Graph | 0.015 | 0.030 | 0.107 | 1.470 | 5.841 |
+| cuSPARSE SpMV + cuBLAS | 0.045 | 0.080 | 0.392 | 3.176 | 13.975 |
 
 ### CG at 4096^2 (16,777,216 unknowns): bandwidth, roofline, speedups
 
 | implementation | ms/iter | model MB/iter | eff. GB/s | % of 300 GB/s | GFLOP/s | flop/byte | vs CPU serial | vs cuSPARSE |
 |---|---|---|---|---|---|---|---|---|
-| CPU serial (CSR) | 149.812 | 2,953 | 19.7 | - | 2.2 | 0.114 | 1.0x | 0.09x |
-| CPU OpenMP 16 thr (CSR) | 48.354 | 2,953 | 61.1 | - | 6.9 | 0.114 | 3.1x | 0.29x |
-| CPU OpenMP 32 thr (CSR) | 49.648 | 2,953 | 59.5 | - | 6.8 | 0.114 | 3.0x | 0.28x |
-| Fortran OpenACC gfortran, GPU | 10.824 | 1,476 | 136.4 | 45.5 | 31.0 | 0.227 | 13.8x | 1.29x |
-| CUDA CSR scalar | 12.719 | 2,953 | 232.1 | 77.4 | 26.4 | 0.114 | 11.8x | 1.10x |
-| CUDA CSR vector (32 lanes/row) | 28.005 | 2,953 | 105.4 | 35.1 | 12.0 | 0.114 | 5.3x | 0.50x |
-| CUDA CSR vector (4 lanes/row) | 12.265 | 2,953 | 240.7 | 80.2 | 27.4 | 0.114 | 12.2x | 1.14x |
-| CUDA matrix-free stencil | 8.021 | 1,879 | 234.3 | 78.1 | 41.8 | 0.179 | 18.7x | 1.74x |
+| CPU serial (CSR) | 149.644 | 2,953 | 19.7 | - | 2.2 | 0.114 | 1.0x | 0.09x |
+| CPU OpenMP 16 thr (CSR) | 47.801 | 2,953 | 61.8 | - | 7.0 | 0.114 | 3.1x | 0.29x |
+| CPU OpenMP 32 thr (CSR) | 52.209 | 2,953 | 56.6 | - | 6.4 | 0.114 | 2.9x | 0.27x |
+| Fortran OpenACC gfortran, GPU | 9.152 | 1,476 | 161.3 | 53.8 | 36.7 | 0.227 | 16.4x | 1.53x |
+| Fortran OpenACC nvfortran, GPU | 7.014 | 1,476 | 210.5 | 70.2 | 47.8 | 0.227 | 21.3x | 1.99x |
+| Fortran do concurrent nvfortran, GPU | 7.791 | 1,476 | 189.5 | 63.2 | 43.1 | 0.227 | 19.2x | 1.79x |
+| CUDA CSR scalar | 12.718 | 2,953 | 232.2 | 77.4 | 26.4 | 0.114 | 11.8x | 1.10x |
+| CUDA CSR vector (32 lanes/row) | 27.520 | 2,953 | 107.3 | 35.8 | 12.2 | 0.114 | 5.4x | 0.51x |
+| CUDA CSR vector (4 lanes/row) | 12.273 | 2,953 | 240.6 | 80.2 | 27.3 | 0.114 | 12.2x | 1.14x |
+| CUDA matrix-free stencil | 8.018 | 1,879 | 234.4 | 78.1 | 41.8 | 0.179 | 18.7x | 1.74x |
 | CUDA stencil + CUDA Graph | 8.013 | 1,879 | 234.5 | 78.2 | 41.9 | 0.179 | 18.7x | 1.74x |
-| CUDA fused (2 kernels/iter) | 6.137 | 1,342 | 218.7 | 72.9 | 54.7 | 0.250 | 24.4x | 2.28x |
-| CUDA fused + CUDA Graph | 6.137 | 1,342 | 218.7 | 72.9 | 54.7 | 0.250 | 24.4x | 2.28x |
-| CUDA fused, row-strip SpMV (2 kernels/iter) | 5.838 | 1,342 | 229.9 | 76.6 | 57.5 | 0.250 | 25.7x | 2.39x |
-| CUDA fused row-strip + CUDA Graph | 5.851 | 1,342 | 229.4 | 76.5 | 57.3 | 0.250 | 25.6x | 2.39x |
-| cuSPARSE SpMV + cuBLAS | 13.977 | 3,221 | 230.5 | 76.8 | 24.0 | 0.104 | 10.7x | 1.00x |
+| CUDA fused (2 kernels/iter) | 6.141 | 1,342 | 218.6 | 72.9 | 54.6 | 0.250 | 24.4x | 2.28x |
+| CUDA fused + CUDA Graph | 6.143 | 1,342 | 218.5 | 72.8 | 54.6 | 0.250 | 24.4x | 2.28x |
+| CUDA fused, row-strip SpMV (2 kernels/iter) | 5.848 | 1,342 | 229.5 | 76.5 | 57.4 | 0.250 | 25.6x | 2.39x |
+| CUDA fused row-strip + CUDA Graph | 5.841 | 1,342 | 229.8 | 76.6 | 57.4 | 0.250 | 25.6x | 2.39x |
+| cuSPARSE SpMV + cuBLAS | 13.975 | 3,221 | 230.5 | 76.8 | 24.0 | 0.104 | 10.7x | 1.00x |
 
 Roofline: the fused CG iteration does 0.25 flop/byte against a ridge point of 1.53 flop/byte, so the attainable rate is bandwidth x intensity = 65 GFLOP/s, 16.4 % of FP64 peak: CG is memory bound by a factor of 6.1, and the only lever is bytes moved per iteration.
 
-Speedups at 4096^2 (best GPU variant = CUDA fused, row-strip SpMV (2 kernels/iter)): **25.7x** vs CPU serial, **8.3x** vs best CPU OpenMP, **2.39x** vs cuSPARSE + cuBLAS; CPU OpenMP vs serial: 3.1x.
+Speedups at 4096^2 (best GPU variant = CUDA fused row-strip + CUDA Graph): **25.6x** vs CPU serial, **8.2x** vs best CPU OpenMP, **2.39x** vs cuSPARSE + cuBLAS; CPU OpenMP vs serial: 3.1x.
 
-Launch-bound regime (256^2, everything L2 resident): stencil 24.8 us/iter -> 20.7 us with a CUDA Graph (1.19x); fused 18.0 -> 16.7 us (1.07x). At 4096^2 the graph changes stencil by 1.001x (launch cost is hidden behind ms-long kernels).
+Fortran at 4096^2: gfortran OpenACC 9.152 ms/iter; Fortran OpenACC nvfortran, GPU 7.014 ms/iter (1.30x faster than gfortran, 1.20x the time of the best CUDA variant, 6.8x faster than best CPU OpenMP); Fortran do concurrent nvfortran, GPU 7.791 ms/iter (1.17x faster than gfortran, 1.33x the time of the best CUDA variant, 6.1x faster than best CPU OpenMP).
+
+Launch-bound regime (256^2, everything L2 resident): stencil 24.8 us/iter -> 20.7 us with a CUDA Graph (1.20x); fused 17.9 -> 16.7 us (1.08x). At 4096^2 the graph changes stencil by 1.001x (launch cost is hidden behind ms-long kernels).
 
 ### CG time to solution, 1024^2, relative residual 1e-8
 
 | implementation | iterations | seconds | true rel. residual | max error vs analytic | vs CPU serial |
 |---|---|---|---|---|---|
-| CUDA CSR scalar | 3152 | 1.683 | 9.95e-09 | 8.857e-08 | 12.7x |
-| CUDA CSR vector (32 lanes/row) | 3152 | 4.523 | 9.95e-09 | 8.857e-08 | 4.7x |
-| CUDA CSR vector (4 lanes/row) | 3152 | 1.701 | 9.95e-09 | 8.857e-08 | 12.6x |
-| CUDA matrix-free stencil | 3152 | 0.446 | 9.95e-09 | 8.857e-08 | 47.9x |
-| CUDA stencil + CUDA Graph | 3160 | 0.426 | 9.28e-09 | 8.857e-08 | 50.2x |
-| CUDA fused (2 kernels/iter) | 3152 | 0.471 | 9.95e-09 | 8.857e-08 | 45.4x |
-| CUDA fused + CUDA Graph | 3160 | 0.462 | 9.28e-09 | 8.857e-08 | 46.3x |
-| CUDA fused, row-strip SpMV (2 kernels/iter) | 3152 | 0.409 | 9.95e-09 | 8.857e-08 | 52.2x |
-| CUDA fused row-strip + CUDA Graph | 3160 | 0.399 | 9.28e-09 | 8.857e-08 | 53.6x |
-| cuSPARSE SpMV + cuBLAS | 3152 | 1.306 | 9.95e-09 | 8.857e-08 | 16.4x |
-| CPU serial (CSR) | 3152 | 21.372 | 9.95e-09 | 8.857e-08 | 1.0x |
-| CPU OpenMP 16 thr (CSR) | 3152 | 2.548 | 9.95e-09 | 8.857e-08 | 8.4x |
-| Fortran OpenACC gfortran, GPU | 3152 | 11.316 | 9.95e-09 | 8.857e-08 | 1.9x |
+| CUDA CSR scalar | 3152 | 1.681 | 9.95e-09 | 8.857e-08 | 12.9x |
+| CUDA CSR vector (32 lanes/row) | 3152 | 4.454 | 9.95e-09 | 8.857e-08 | 4.9x |
+| CUDA CSR vector (4 lanes/row) | 3152 | 1.697 | 9.95e-09 | 8.857e-08 | 12.8x |
+| CUDA matrix-free stencil | 3152 | 0.445 | 9.95e-09 | 8.857e-08 | 48.8x |
+| CUDA stencil + CUDA Graph | 3160 | 0.418 | 9.28e-09 | 8.857e-08 | 51.9x |
+| CUDA fused (2 kernels/iter) | 3152 | 0.461 | 9.95e-09 | 8.857e-08 | 47.1x |
+| CUDA fused + CUDA Graph | 3160 | 0.450 | 9.28e-09 | 8.857e-08 | 48.1x |
+| CUDA fused, row-strip SpMV (2 kernels/iter) | 3152 | 0.400 | 9.95e-09 | 8.857e-08 | 54.3x |
+| CUDA fused row-strip + CUDA Graph | 3160 | 0.392 | 9.28e-09 | 8.857e-08 | 55.2x |
+| cuSPARSE SpMV + cuBLAS | 3152 | 1.296 | 9.95e-09 | 8.857e-08 | 16.7x |
+| CPU serial (CSR) | 3152 | 21.679 | 9.95e-09 | 8.857e-08 | 1.0x |
+| CPU OpenMP 16 thr (CSR) | 3152 | 2.855 | 9.95e-09 | 8.857e-08 | 7.6x |
+| Fortran OpenACC gfortran, GPU | 3152 | 11.373 | 9.95e-09 | 8.857e-08 | 1.9x |
+| Fortran OpenACC nvfortran, GPU | 3152 | 0.599 | 9.95e-09 | 8.857e-08 | 36.2x |
+| Fortran do concurrent nvfortran, GPU | 3152 | 0.551 | 9.95e-09 | 8.857e-08 | 39.3x |
 
 GPU solves check the residual every iteration (graph variants every 10), which adds a device-to-host copy per check; it is included in these times.
 
@@ -208,10 +226,10 @@ GPU solves check the residual every iteration (graph variants every 10), which a
 
 | kernel | 1024^2 | 2048^2 | 4096^2 | 8192^2 |
 |---|---|---|---|---|
-| CPU OpenMP 16 threads | 271.9 (0.093 ms) | 104.9 (0.960 ms) | 56.4 (7.142 ms) | 54.8 (29.396 ms) |
-| CUDA naive (global loads) | 876.1 (0.029 ms) | 243.0 (0.414 ms) | 241.6 (1.667 ms) | 241.0 (6.682 ms) |
-| CUDA shared-memory tile 32x8 | 823.9 (0.031 ms) | 245.3 (0.410 ms) | 243.1 (1.657 ms) | 243.2 (6.622 ms) |
-| CUDA register streaming (16 rows/thread) | 851.3 (0.030 ms) | 225.2 (0.447 ms) | 227.6 (1.769 ms) | 227.6 (7.077 ms) |
+| CPU OpenMP 16 threads | 266.6 (0.094 ms) | 107.0 (0.941 ms) | 54.6 (7.370 ms) | 54.0 (29.825 ms) |
+| CUDA naive (global loads) | 875.8 (0.029 ms) | 242.7 (0.415 ms) | 241.5 (1.667 ms) | 241.0 (6.682 ms) |
+| CUDA shared-memory tile 32x8 | 822.5 (0.031 ms) | 245.3 (0.410 ms) | 243.0 (1.657 ms) | 243.2 (6.623 ms) |
+| CUDA register streaming (16 rows/thread) | 850.4 (0.030 ms) | 225.4 (0.447 ms) | 227.7 (1.768 ms) | 227.6 (7.075 ms) |
 
 ### Nsight Compute, one launch per kernel at 4096^2 (`ncu --set full`)
 
@@ -255,6 +273,29 @@ Unprivileged `ncu` on this host fails with:
 | cgk::lib_alpha(cgk::Scalars *) | 110 | 1 |
 
 **13 GPU kernels per CG iteration** for the library path vs 2 for the fused variant.
+
+### Nsight Systems, Fortran GPU builds (n = 1024, 100 fixed iterations)
+
+| build | kernel | per iteration | avg us |
+|---|---|---|---|
+| gfortran OpenACC | MAIN__$_omp_fn$0 | 1 | 1,528.9 |
+| gfortran OpenACC | MAIN__$_omp_fn$1 | 1 | 1,518.3 |
+| gfortran OpenACC | MAIN__$_omp_fn$2 | 1 | 13.6 |
+| gfortran OpenACC | **sum of kernel time per iteration: 3.061 ms** | 3 | API calls/iter: cuMemAlloc_v2 3, cuMemFree_v2 3, cuStreamSynchronize 3 |
+| nvfortran OpenACC | cg_acc_112_gpu | 1 | 47.8 |
+| nvfortran OpenACC | cg_acc_123_gpu | 1 | 35.2 |
+| nvfortran OpenACC | cg_acc_135_gpu | 1 | 14.1 |
+| nvfortran OpenACC | cg_acc_123_gpu__red | 1 | 7.4 |
+| nvfortran OpenACC | cg_acc_112_gpu__red | 1 | 6.9 |
+| nvfortran OpenACC | **sum of kernel time per iteration: 0.111 ms** | 5 | API calls/iter: cuMemAlloc_v2 0, cuMemFree_v2 0, cuStreamSynchronize 10 |
+| nvfortran do concurrent | cg_acc_87_gpu | 1 | 99.4 |
+| nvfortran do concurrent | cg_acc_93_gpu | 1 | 84.0 |
+| nvfortran do concurrent | cg_acc_100_gpu | 1 | 14.2 |
+| nvfortran do concurrent | cg_acc_87_gpu__red | 1 | 9.2 |
+| nvfortran do concurrent | cg_acc_93_gpu__red | 1 | 8.7 |
+| nvfortran do concurrent | **sum of kernel time per iteration: 0.215 ms** | 5 | API calls/iter: cuMemAlloc_v2 0, cuMemFree_v2 0, cuStreamSynchronize 3 |
+
+Kernel names are compiler generated: gfortran numbers the offloaded regions (`MAIN__$_omp_fn$N`), nvfortran names them by source line, with a `__red` kernel finishing each reduction. `-Minfo` compiler feedback for the nvfortran builds is in `results/minfo/`.
 
 ### compute-sanitizer
 
@@ -307,14 +348,45 @@ Unprivileged `ncu` on this host fails with:
 
 ## What did not work / limits
 
-* **OpenACC with gfortran 11 is slow.** It runs on the GPU (verified by the test
-  above), and its time per iteration is dominated by libgomp's per-region launch
-  and reduction overhead plus gang/vector mapping (vector length 32), not by
-  memory traffic: at small sizes it is slower than the serial CPU. NVIDIA's
-  `nvfortran` (HPC SDK) was not installed or tried; it would be the fair
-  OpenACC comparison. Making gfortran 11 offload work at all needed
-  `-foffload=nvptx-none=-Wa,--no-verify` (its PTX targets sm_35, which CUDA 12's
-  ptxas refuses; the driver JIT-compiles the PTX for sm_89).
+* **OpenACC with gfortran 11 is slow; the same source with nvfortran is not.**
+  Both builds run on the GPU (verified by the ctests above). The Nsight Systems
+  table shows where gfortran loses: its kernel without a reduction (`p` update)
+  takes the same time as nvfortran's, but each of its two reduction loops costs
+  about 1.5 ms at 1024^2 against tens of microseconds for nvfortran's
+  kernel + `__red` pair. libgomp launches a fixed 2784 gangs of 32 threads at
+  every size, and the PTX combines the reduction with a 64-bit `atom.cas` retry
+  loop on one global address; that is the likely cost (inferred from the PTX
+  and the kernel times, not profiled inside the kernel). It also allocates and
+  frees device memory for each reduction region every iteration. The fixed cost
+  explains why gfortran is slower than the serial CPU at small sizes and closest
+  to nvfortran at 4096^2, where streaming DRAM time dominates. Making gfortran 11
+  offload work at all needed `-foffload=nvptx-none=-Wa,--no-verify` (its PTX
+  targets sm_35, which CUDA 12's ptxas refuses; the driver JIT-compiles the PTX
+  for sm_89).
+* **nvfortran OpenACC and `do concurrent` still trail the best CUDA kernel**
+  at 4096^2: three loops with two reductions move 88 N bytes per iteration and
+  launch five kernels (each reduction is finished by a second kernel), while the
+  fused CUDA variant moves 80 N in two kernels with in-kernel reductions. At
+  1024^2 and 2048^2 both nvfortran builds land between the plain CUDA stencil
+  and the CSR kernels; at 256^2 and 512^2, where launch and synchronisation
+  cost dominate, they take about 2x to 4x the time of the fused CUDA variants.
+  Only one compiler flag set was tried (`-O3 -acc=gpu -gpu=cc89`,
+  default vector length 128); no `async` queues or fused loops.
+* **The `do concurrent` build relies on CUDA managed memory** (`-stdpar=gpu`),
+  so the first iterations pay page migration instead of an explicit copy; it is
+  inside the timed region, as the data-region copies are for the OpenACC builds,
+  and it also inflates the per-kernel averages in the 100-iteration nsys table.
+  The build adds `-acc=gpu` only for `acc_get_property_string` / `acc_init`; the
+  loops themselves carry no directives.
+* **Fortran timings include host to device transfers** of the arrays (once per
+  run). The fixed-iteration runs therefore use the same, longer iteration
+  counts as CUDA; an earlier run with 5x fewer iterations reported a
+  higher ms/iter for gfortran at 4096^2 (see `docs/DEVLOG.md`).
+* **The NVIDIA HPC SDK is a trimmed, uninstalled unpack.** Only `compilers/`
+  of the 26.9 tarball was extracted (no bundled CUDA, math or communication
+  libraries); nvfortran uses the system CUDA 12.9 through `NVHPC_CUDA_HOME` and
+  a `localrc` made with `makelocalrc`. The runtime's CUDA 12.9 and the 580
+  driver (CUDA 13.0) are the same as for the nvcc builds.
 * **No preconditioner.** Unpreconditioned CG needs O(n) iterations; a real
   solver would use multigrid or at least Jacobi/IC preconditioning. This study
   is about the per-iteration kernel performance.

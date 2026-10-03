@@ -9,6 +9,7 @@ source scripts/env.sh
 ./scripts/sanitize.sh
 ./scripts/bench.sh
 ./scripts/profile.sh
+./scripts/profile_fortran.sh
 [ -x .venv/bin/python ] || { uv venv -q --python 3.10 .venv && uv pip install -q --python .venv/bin/python "numpy<2" matplotlib; }
 .venv/bin/python scripts/make_report.py > /dev/null
 echo "done: see results/RESULTS.md and README.md"

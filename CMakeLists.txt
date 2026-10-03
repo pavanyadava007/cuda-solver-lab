@@ -53,6 +53,34 @@ if(BUILD_OPENACC)
   target_compile_options(cg_acc_host PRIVATE -O3)
 endif()
 
+# ---- Fortran + OpenACC / do concurrent (nvfortran, NVIDIA HPC SDK) -----------
+# Optional: built only when nvfortran is found (PATH, NVHPC_ROOT, or the
+# trimmed tarball unpack in ~/opt/nvhpc, see docs/DEVLOG.md). CMake's Fortran
+# language is gfortran here, so nvfortran is driven by custom commands. The
+# SDK's bundled CUDA was not unpacked; NVHPC_CUDA_HOME points nvfortran at the
+# same CUDA toolkit nvcc uses. -Minfo output lands next to the binaries.
+option(BUILD_NVFORTRAN "Build the nvfortran OpenACC / stdpar solvers if nvfortran is found" ON)
+if(BUILD_NVFORTRAN)
+  find_program(NVFORTRAN nvfortran
+    HINTS $ENV{NVHPC_ROOT}/compilers/bin
+          $ENV{HOME}/opt/nvhpc/install_components/Linux_x86_64/26.9/compilers/bin)
+endif()
+if(BUILD_NVFORTRAN AND NVFORTRAN)
+  message(STATUS "nvfortran: ${NVFORTRAN}")
+  get_filename_component(NVF_CUDA_HOME "${CUDAToolkit_BIN_DIR}" DIRECTORY)
+  set(NVF ${CMAKE_COMMAND} -E env NVHPC_CUDA_HOME=${NVF_CUDA_HOME} ${NVFORTRAN})
+  set(ACC_SRC ${CMAKE_SOURCE_DIR}/src/acc/cg_acc.F90)
+  add_custom_command(OUTPUT cg_acc_nvf cg_acc_nvf.minfo.txt
+    COMMAND ${NVF} -O3 -acc=gpu -gpu=cc89 -Minfo=accel ${ACC_SRC} -o cg_acc_nvf > cg_acc_nvf.minfo.txt 2>&1
+    DEPENDS ${ACC_SRC} COMMENT "nvfortran -acc=gpu cg_acc.F90" VERBATIM)
+  # do concurrent build: -acc=gpu is only there for acc_get_property_string /
+  # acc_init; the OpenACC data region is compiled out by -DUSE_DC.
+  add_custom_command(OUTPUT cg_dc_nvf cg_dc_nvf.minfo.txt
+    COMMAND ${NVF} -O3 -DUSE_DC -stdpar=gpu -acc=gpu -gpu=cc89 -Minfo=accel,stdpar ${ACC_SRC} -o cg_dc_nvf > cg_dc_nvf.minfo.txt 2>&1
+    DEPENDS ${ACC_SRC} COMMENT "nvfortran -stdpar=gpu cg_acc.F90 (do concurrent)" VERBATIM)
+  add_custom_target(nvfortran_solvers ALL DEPENDS cg_acc_nvf cg_dc_nvf)
+endif()
+
 # ---- tests -------------------------------------------------------------------
 enable_testing()
 set(T ${CMAKE_SOURCE_DIR}/tests)
@@ -65,4 +93,8 @@ add_test(NAME second_order_convergence COMMAND ${T}/check_order.sh $<TARGET_FILE
 if(BUILD_OPENACC)
   add_test(NAME fortran_serial_converges COMMAND cg_acc_host 255 tol 100000 1e-10)
   add_test(NAME fortran_openacc_runs_on_gpu COMMAND ${T}/check_acc_gpu.sh $<TARGET_FILE:cg_acc_gpu>)
+endif()
+if(BUILD_NVFORTRAN AND NVFORTRAN)
+  add_test(NAME nvfortran_openacc_runs_on_gpu COMMAND ${T}/check_nvf_gpu.sh ${CMAKE_BINARY_DIR}/cg_acc_nvf)
+  add_test(NAME nvfortran_do_concurrent_runs_on_gpu COMMAND ${T}/check_nvf_gpu.sh ${CMAKE_BINARY_DIR}/cg_dc_nvf)
 endif()

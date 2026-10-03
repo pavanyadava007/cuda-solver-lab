@@ -11,6 +11,11 @@ rm -f "$RAW"/peaks.csv "$RAW"/cg.csv "$RAW"/jacobi.csv "$RAW"/gpu_contention.log
   nvcc --version | tail -2
   g++ --version | head -1
   gfortran --version | head -1
+  if [ -x "$BUILD/cg_acc_nvf" ]; then
+    nvf=$(grep -m1 '^NVFORTRAN:' "$BUILD/CMakeCache.txt" | cut -d= -f2)
+    echo "nvfortran: $nvf"
+    "$nvf" --version | grep -m1 nvfortran
+  fi
   lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Core'
 } > "$RAW/env.txt"
 
@@ -29,8 +34,14 @@ for n in 256 512 1024 2048 4096; do
     OMP_NUM_THREADS=$t OMP_PROC_BIND=spread OMP_PLACES=threads \
       "$BUILD/cg_omp" --n "$n" --mode fixed --iters $((2 * CPU_IT[$n])) --reps 3 --csv "$RAW/cg.csv"
   done
+  # Fortran GPU builds use the CUDA iteration counts: the timed region includes
+  # the host->device copies of the data region (managed-memory migration for
+  # do concurrent), which short runs would not amortise (docs/DEVLOG.md).
   wait_for_idle_gpu "cg_acc_n$n"
-  "$BUILD/cg_acc_gpu" "$n" fixed "$((CPU_IT[$n] * 2))" 0 "$RAW/cg.csv"
+  "$BUILD/cg_acc_gpu" "$n" fixed "${GPU_IT[$n]}" 0 "$RAW/cg.csv"
+  for b in cg_acc_nvf cg_dc_nvf; do  # optional nvfortran builds
+    [ -x "$BUILD/$b" ] && "$BUILD/$b" "$n" fixed "${GPU_IT[$n]}" 0 "$RAW/cg.csv"
+  done
 done
 "$BUILD/cg_acc_host" 1024 fixed 50 0 "$RAW/cg.csv"
 
@@ -41,6 +52,14 @@ wait_for_idle_gpu cg_tol
 OMP_NUM_THREADS=16 OMP_PROC_BIND=spread OMP_PLACES=threads \
   "$BUILD/cg_omp" --n 1024 --mode tol --tol 1e-8 --csv "$RAW/cg.csv"
 "$BUILD/cg_acc_gpu" 1024 tol 100000 1e-8 "$RAW/cg.csv"
+for b in cg_acc_nvf cg_dc_nvf; do
+  [ -x "$BUILD/$b" ] && "$BUILD/$b" 1024 tol 100000 1e-8 "$RAW/cg.csv"
+done
+# nvfortran compiler feedback (-Minfo) as an artefact.
+mkdir -p "$ROOT/results/minfo"
+for b in cg_acc_nvf cg_dc_nvf; do
+  [ -f "$BUILD/$b.minfo.txt" ] && cp "$BUILD/$b.minfo.txt" "$ROOT/results/minfo/"
+done
 
 # 4. Jacobi kernels (+ CPU OpenMP baseline with 16 threads).
 for n in 1024 2048 4096 8192; do

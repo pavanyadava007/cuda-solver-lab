@@ -1,21 +1,25 @@
 Test project /home/ec2-user/workspace/cuda-solver-lab/build
-    Start 1: cpu_serial_converges
-1/8 Test #1: cpu_serial_converges .............   Passed    0.61 sec
-    Start 2: cpu_openmp_converges
-2/8 Test #2: cpu_openmp_converges .............   Passed    0.15 sec
-    Start 3: cuda_all_variants_n255
-3/8 Test #3: cuda_all_variants_n255 ...........   Passed    0.84 sec
-    Start 4: cuda_all_variants_n512
-4/8 Test #4: cuda_all_variants_n512 ...........   Passed    2.04 sec
-    Start 5: jacobi_gpu_matches_cpu
-5/8 Test #5: jacobi_gpu_matches_cpu ...........   Passed    0.27 sec
-    Start 6: second_order_convergence
-6/8 Test #6: second_order_convergence .........   Passed    0.75 sec
-    Start 7: fortran_serial_converges
-7/8 Test #7: fortran_serial_converges .........   Passed    0.12 sec
-    Start 8: fortran_openacc_runs_on_gpu
-8/8 Test #8: fortran_openacc_runs_on_gpu ......   Passed    2.66 sec
+      Start  1: cpu_serial_converges
+ 1/10 Test  #1: cpu_serial_converges ..................   Passed    0.61 sec
+      Start  2: cpu_openmp_converges
+ 2/10 Test  #2: cpu_openmp_converges ..................   Passed    0.16 sec
+      Start  3: cuda_all_variants_n255
+ 3/10 Test  #3: cuda_all_variants_n255 ................   Passed    0.84 sec
+      Start  4: cuda_all_variants_n512
+ 4/10 Test  #4: cuda_all_variants_n512 ................   Passed    2.05 sec
+      Start  5: jacobi_gpu_matches_cpu
+ 5/10 Test  #5: jacobi_gpu_matches_cpu ................   Passed    0.26 sec
+      Start  6: second_order_convergence
+ 6/10 Test  #6: second_order_convergence ..............   Passed    0.73 sec
+      Start  7: fortran_serial_converges
+ 7/10 Test  #7: fortran_serial_converges ..............   Passed    0.12 sec
+      Start  8: fortran_openacc_runs_on_gpu
+ 8/10 Test  #8: fortran_openacc_runs_on_gpu ...........   Passed    2.66 sec
+      Start  9: nvfortran_openacc_runs_on_gpu
+ 9/10 Test  #9: nvfortran_openacc_runs_on_gpu .........   Passed    0.33 sec
+      Start 10: nvfortran_do_concurrent_runs_on_gpu
+10/10 Test #10: nvfortran_do_concurrent_runs_on_gpu ...   Passed    0.29 sec
 
-100% tests passed, 0 tests failed out of 8
+100% tests passed, 0 tests failed out of 10
 
-Total Test time (real) =   7.44 sec
+Total Test time (real) =   8.05 sec

@@ -192,3 +192,83 @@ nobody could detect later. `scripts/env.sh` now has `wait_for_idle_gpu`, which
 blocks until no other compute process is on the GPU and logs what it saw to
 `results/raw/gpu_contention.log` before every benchmark block. For the final
 run every entry shows no other GPU process.
+
+## 12. nvfortran: installing the HPC SDK in 2.2 GB
+
+**Constraint.** The root disk had about 11 GB free and the HPC SDK 26.9 tarball
+(`nvhpc_2026_269_Linux_x86_64_cuda_13.3.tar.gz`) is 6.9 GB compressed and much
+larger unpacked; its `install` script copies the unpacked tree again.
+
+**What worked.** Stream the tarball straight into `tar` (the archive is never
+stored) and skip everything except the compilers while streaming:
+
+```
+curl -s https://developer.download.nvidia.com/hpc-sdk/26.9/nvhpc_2026_269_Linux_x86_64_cuda_13.3.tar.gz \
+  | tar xzp -C ~/opt/nvhpc --strip-components=1 --wildcards \
+      --exclude='*/26.9/comm_libs/*' --exclude='*/26.9/REDIST/*' --exclude='*/26.9/math_libs/*' \
+      --exclude='*/26.9/profilers/*' --exclude='*/26.9/examples/*' --exclude='*/26.9/cuda/*'
+~/opt/nvhpc/install_components/Linux_x86_64/26.9/compilers/bin/makelocalrc -x <that bin dir> -cuda 12.9
+```
+
+The `install` script was not run. `makelocalrc` writes the `localrc` the
+installer would have written (gcc paths, default CUDA version), and
+`NVHPC_CUDA_HOME=/usr/local/cuda-12.9` points nvfortran at the CUDA toolkit
+nvcc already uses, so the bundled CUDA 13.3 (and its version question against
+the 580 driver) never comes into play. Result: 2.2 GB on disk. CMake drives
+nvfortran through custom commands because the project's Fortran compiler is
+gfortran; the targets and their tests are skipped if nvfortran is not found.
+
+## 13. nvfortran: same source, three small bugs before the numbers were right
+
+* **The CSV line was cut off.** nvfortran's `acc_get_property_string` pads the
+  device name with NUL characters, not blanks, so `trim()` kept about 250
+  characters and the 256-character output line ended after the device name
+  (dev run: `2026-10-03,NVIDIA L4` followed by blanks). The name is now cut at
+  the first `achar(0)`.
+* **About 0.1 s of context creation was inside the timed region.** nvfortran
+  creates the CUDA context lazily, at the first data region. Dev runs at 256^2:
+  4.97 ms/iter with 20 iterations, 0.54 ms/iter with 200. `acc_init` before the
+  timer fixed it (0.095 and 0.068 ms/iter). The call is compiled only for
+  nvfortran: libgomp already creates the context inside
+  `acc_get_property_string`, and a second `acc_init` aborts with
+  `libgomp: device already active`.
+* **`bench.sh` read the wrong CMake cache line.** `grep NVFORTRAN` matched
+  `BUILD_NVFORTRAN:BOOL=ON` first, so the script tried to execute `ON`. The run
+  stopped after it had already removed `results/raw/cg.csv`; the whole
+  benchmark was re-run after anchoring the pattern (`^NVFORTRAN:`).
+
+**A methodology fix for gfortran too.** The Fortran timer includes the copies
+into the data region (and managed-memory migration for `do concurrent`). The
+first gfortran runs used 2x the CPU iteration counts, e.g. 20 iterations at
+4096^2, where the transfers are a visible share: 10.82 ms/iter (the previous
+`results/raw/cg.csv`) against 8.93 ms/iter with 200 iterations (dev run). All
+three Fortran GPU builds now use the CUDA iteration counts (100 at 4096^2,
+2000 at 256^2).
+
+## 14. Why gfortran's OpenACC is slow: the reductions
+
+With nvfortran in hand the same three loops could be compared kernel by
+kernel (`scripts/profile_fortran.sh`, `results/nsys/*_n1024_*.csv`, summarised
+in `results/RESULTS.md`):
+
+* The loop without a reduction (`p = r + beta p`) takes the same time with both
+  compilers (about 14 us at 1024^2). Code generation for plain streaming loops
+  is not the problem.
+* Each of gfortran's two reduction loops takes about 1.5 ms at 1024^2;
+  nvfortran's corresponding kernel plus its `__red` finishing kernel take
+  tens of microseconds.
+* `GOMP_DEBUG=1` shows libgomp launching 2784 gangs x 32 threads for every
+  loop at 256^2, 1024^2 and 4096^2 alike, and the PTX it prints contains one
+  64-bit `atom.cas` loop per reduction: the per-gang partial sums are combined
+  by compare-and-swap retries on a single global address. A fixed number of
+  gangs contending on one address would give a cost that does not grow with n,
+  which matches the data: gfortran's ms/iter barely changes from 256^2 to
+  1024^2, and the gap to nvfortran shrinks at 4096^2 where DRAM streaming
+  dominates. This is the likely mechanism, inferred from the PTX and the timings;
+  I did not profile inside the kernel (ncu on the gfortran binary was not run).
+* gfortran also calls `cuMemAlloc` and `cuMemFree` for each reduction region
+  every iteration (3 each per iteration in the API summary); nvfortran
+  allocates once.
+
+Launch overhead itself is not the explanation: nvfortran launches more kernels
+per iteration (5 against 3).

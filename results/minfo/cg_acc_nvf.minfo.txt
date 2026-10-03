@@ -1,0 +1,26 @@
+cg_acc:
+    106, Generating copyin(p(:,:)) [if not already present]
+         Generating create(ap(:,:)) [if not already present]
+         Generating copy(x(:,:)) [if not already present]
+         Generating copyin(r(:,:)) [if not already present]
+    112, Generating present(p(:,:),ap(:,:))
+         Generating implicit firstprivate(n)
+         Generating NVIDIA GPU code
+        113, !$acc loop gang, vector(128) collapse(2) ! blockidx%x threadidx%x
+             Generating reduction(+:pap)
+        114,   ! blockidx%x threadidx%x collapsed
+    112, Generating implicit copy(pap) [if not already present]
+    123, Generating present(x(:,:),r(:,:),p(:,:),ap(:,:))
+         Generating implicit firstprivate(n)
+         Generating NVIDIA GPU code
+        124, !$acc loop gang, vector(128) collapse(2) ! blockidx%x threadidx%x
+             Generating reduction(+:rr_new)
+        125,   ! blockidx%x threadidx%x collapsed
+    123, Generating implicit copy(rr_new) [if not already present]
+    125, Generating implicit firstprivate(alpha)
+    135, Generating present(r(:,:),p(:,:))
+         Generating implicit firstprivate(n)
+         Generating NVIDIA GPU code
+        136, !$acc loop gang, vector(128) collapse(2) ! blockidx%x threadidx%x
+        137,   ! blockidx%x threadidx%x collapsed
+    137, Generating implicit firstprivate(beta)

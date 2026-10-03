@@ -35,6 +35,8 @@ LABEL = {
     "cpu_openmp32/csr": "CPU OpenMP 32 thr (CSR)",
     "fortran_openacc_gfortran/stencil_3loops": "Fortran OpenACC gfortran, GPU",
     "fortran_serial_gfortran/stencil_3loops": "Fortran serial gfortran, CPU",
+    "fortran_openacc_nvfortran/stencil_3loops": "Fortran OpenACC nvfortran, GPU",
+    "fortran_stdpar_nvfortran/stencil_3loops": "Fortran do concurrent nvfortran, GPU",
     "cuda/csr_scalar": "CUDA CSR scalar",
     "cuda/csr_vector32": "CUDA CSR vector (32 lanes/row)",
     "cuda/csr_vector4": "CUDA CSR vector (4 lanes/row)",
@@ -46,6 +48,12 @@ LABEL = {
     "cuda/fused_rows_graph": "CUDA fused row-strip + CUDA Graph",
     "cuda/cusparse": "cuSPARSE SpMV + cuBLAS",
 }
+
+
+FORTRAN_GPU = ["fortran_openacc_gfortran/stencil_3loops", "fortran_openacc_nvfortran/stencil_3loops",
+               "fortran_stdpar_nvfortran/stencil_3loops"]
+NSYS_FORTRAN = [("cg_acc_gpu", "gfortran OpenACC"), ("cg_acc_nvf", "nvfortran OpenACC"),
+                ("cg_dc_nvf", "nvfortran do concurrent")]
 
 
 def read_csv(path: Path) -> list[dict]:
@@ -152,7 +160,7 @@ def main() -> None:
         by[key(r)][int(r["n"])] = r
     sizes = sorted({int(r["n"]) for r in fixed})
     order = ["cpu_serial/csr", "cpu_openmp16/csr", "cpu_openmp32/csr",
-             "fortran_openacc_gfortran/stencil_3loops"] + [f"cuda/{v}" for v in GPU_ORDER]
+             ] + FORTRAN_GPU + [f"cuda/{v}" for v in GPU_ORDER]
     order = [k for k in order if k in by]
 
     sec.append("### CG: time per iteration (ms), fixed iteration count\n")
@@ -176,7 +184,7 @@ def main() -> None:
         flops = 2 * float(r["nnz"]) + 10 * float(r["unknowns"])
         ai = flops / float(r["model_bytes_per_iter"])
         rows.append([LABEL.get(k, k), fmt(ms, 3), fmt(float(r["model_bytes_per_iter"]) / 1e6, 0),
-                     fmt(gbs, 1), fmt(100 * gbs / SPEC_BW, 1) if k.startswith(("cuda", "fortran_openacc")) else "-",
+                     fmt(gbs, 1), fmt(100 * gbs / SPEC_BW, 1) if k.startswith(("cuda", "fortran_openacc", "fortran_stdpar")) else "-",
                      fmt(float(r["gflops"]), 1), f"{ai:.3f}", fmt(serial / ms, 1) + "x",
                      fmt(lib / ms, 2) + "x"])
     sec.append(md_table(["implementation", "ms/iter", "model MB/iter", "eff. GB/s", "% of 300 GB/s",
@@ -194,6 +202,18 @@ def main() -> None:
         f"Speedups at {big}^2 (best GPU variant = {LABEL[best_gpu_key]}): "
         f"**{serial / best_gpu:.1f}x** vs CPU serial, **{omp / best_gpu:.1f}x** vs best CPU OpenMP, "
         f"**{lib / best_gpu:.2f}x** vs cuSPARSE + cuBLAS; CPU OpenMP vs serial: {serial / omp:.1f}x.\n")
+
+    # Fortran GPU builds against each other and the C++ / CUDA versions
+    fk = [k for k in FORTRAN_GPU if k in by and big in by[k]]
+    if len(fk) > 1:
+        gf = float(by[fk[0]][big]["ms_per_iter"])
+        parts = []
+        for k in fk[1:]:
+            ms = float(by[k][big]["ms_per_iter"])
+            parts.append(f"{LABEL[k]} {fmt(ms, 3)} ms/iter ({gf / ms:.2f}x faster than gfortran, "
+                         f"{ms / best_gpu:.2f}x the time of the best CUDA variant, {omp / ms:.1f}x faster than "
+                         f"best CPU OpenMP)")
+        sec.append(f"Fortran at {big}^2: gfortran OpenACC {fmt(gf, 3)} ms/iter; " + "; ".join(parts) + ".\n")
 
     # small-size launch overhead
     small = min(sizes)
@@ -286,6 +306,29 @@ def main() -> None:
         sec.append(md_table(["kernel", "instances", "per iteration"], rows))
         sec.append(f"\n**{total / 110:.0f} GPU kernels per CG iteration** for the library path vs 2 for the fused variant.\n")
 
+    # ---- nsys census of the Fortran GPU builds
+    fr = [(b, name) for b, name in NSYS_FORTRAN
+          if (ROOT / "results" / "nsys" / f"{b}_n1024_cuda_gpu_kern_sum.csv").exists()]
+    if fr:
+        sec.append("### Nsight Systems, Fortran GPU builds (n = 1024, 100 fixed iterations)\n")
+        rows = []
+        for b, name in fr:
+            kr = read_csv(ROOT / "results" / "nsys" / f"{b}_n1024_cuda_gpu_kern_sum.csv")
+            ar = read_csv(ROOT / "results" / "nsys" / f"{b}_n1024_cuda_api_sum.csv")
+            for r in kr:
+                rows.append([name, r["Name"], f"{int(r['Instances']) / 100:.0f}",
+                             fmt(float(r["Avg (ns)"]) / 1e3, 1)])
+            api = {r["Name"]: int(r["Num Calls"]) for r in ar}
+            ktot = sum(float(r["Total Time (ns)"]) for r in kr) / 1e6 / 100
+            calls = ", ".join(f"{c} {api[c] / 100:.0f}" for c in ("cuMemAlloc_v2", "cuMemFree_v2", "cuStreamSynchronize")
+                              if c in api)
+            rows.append([name, f"**sum of kernel time per iteration: {fmt(ktot, 3)} ms**",
+                         f"{sum(int(r['Instances']) for r in kr) / 100:.0f}", f"API calls/iter: {calls}"])
+        sec.append(md_table(["build", "kernel", "per iteration", "avg us"], rows))
+        sec.append("\nKernel names are compiler generated: gfortran numbers the offloaded regions "
+                   "(`MAIN__$_omp_fn$N`), nvfortran names them by source line, with a `__red` kernel finishing "
+                   "each reduction. `-Minfo` compiler feedback for the nvfortran builds is in `results/minfo/`.\n")
+
     # ---- sanitizer
     sz = ROOT / "results" / "sanitizer" / "summary.csv"
     if sz.exists():
@@ -311,7 +354,8 @@ def main() -> None:
     # ------------------------------------------------------------- figures --
     # 1. ms/iter vs grid size
     fig, ax = plt.subplots(figsize=(8, 5))
-    show = ["cpu_serial/csr", "cpu_openmp16/csr", "fortran_openacc_gfortran/stencil_3loops", "cuda/csr_scalar",
+    show = ["cpu_serial/csr", "cpu_openmp16/csr", "fortran_openacc_gfortran/stencil_3loops",
+            "fortran_openacc_nvfortran/stencil_3loops", "cuda/csr_scalar",
             "cuda/cusparse", "cuda/stencil", "cuda/fused_rows"]
     for i, k in enumerate([k for k in show if k in by]):
         ns = sorted(by[k])

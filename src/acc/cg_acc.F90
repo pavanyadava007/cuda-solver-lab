@@ -5,8 +5,12 @@
 ! The whole solve runs inside one OpenACC data region: only the scalar
 ! reductions return to the host each iteration.
 !
-! Built twice by CMake: cg_acc_gpu (gfortran -fopenacc, nvptx offload) and
-! cg_acc_host (same source without -fopenacc, i.e. serial Fortran).
+! Built by CMake as cg_acc_gpu (gfortran -fopenacc, nvptx offload),
+! cg_acc_host (same source without -fopenacc, i.e. serial Fortran) and, when
+! the NVIDIA HPC SDK is found, cg_acc_nvf (nvfortran -acc=gpu, the same
+! OpenACC directives) and cg_dc_nvf (nvfortran -stdpar=gpu, -DUSE_DC: the three
+! loops written as Fortran 2018/2023 `do concurrent` with `reduce`, no
+! OpenACC data region; arrays live in CUDA managed memory).
 !
 ! Usage: cg_acc_xxx n mode iters tol [csv]
 !   mode = fixed (exactly iters iterations) | tol (stop at ||r||/||b|| < tol)
@@ -34,13 +38,23 @@ program cg_acc
   csv = ''
   if (command_argument_count() >= 5) call get_command_argument(5, csv)
   fixed = (trim(mode) == 'fixed')
-#ifdef _OPENACC
+#if defined(USE_DC)
+  impl = 'fortran_stdpar_nvfortran'
+  call acc_get_property_string(0, acc_device_nvidia, acc_property_name, device)
+#elif defined(_OPENACC) && defined(__NVCOMPILER)
+  impl = 'fortran_openacc_nvfortran'
+  call acc_get_property_string(0, acc_device_nvidia, acc_property_name, device)
+#elif defined(_OPENACC)
   impl = 'fortran_openacc_gfortran'
   call acc_get_property_string(0, acc_device_nvidia, acc_property_name, device)
 #else
   impl = 'fortran_serial_gfortran'
   device = 'host_cpu'
 #endif
+  ! nvfortran's acc_get_property_string pads with NUL, not blanks, so trim()
+  ! keeps 200+ characters and the CSV line overflowed (see docs/DEVLOG.md).
+  i = index(device, achar(0))
+  if (i > 0) device(i:) = ' '
 
   h = 1.0_dp / (n + 1)
   allocate (x(0:n+1, 0:n+1), r(0:n+1, 0:n+1), p(0:n+1, 0:n+1), ap(0:n+1, 0:n+1), b(0:n+1, 0:n+1))
@@ -55,8 +69,40 @@ program cg_acc
   bb = sum(b * b)
   rr = bb
 
+#if defined(_OPENACC) && defined(__NVCOMPILER)
+  ! Create the device context before the timer starts, as libgomp already does
+  ! inside acc_get_property_string (where a second acc_init aborts with
+  ! "device already active"). Without it nvfortran's lazy context creation
+  ! (about 0.1 s) landed inside the timed region. Host->device copies of the
+  ! data region (or managed-memory migration for do concurrent) stay inside.
+  call acc_init(acc_device_nvidia)
+#endif
   call system_clock(c0, rate)
   done = 0
+#ifdef USE_DC
+  ! Same three loops as Fortran do concurrent (nvfortran -stdpar=gpu).
+  do it = 1, iters
+    if (.not. fixed .and. sqrt(rr / bb) < tol) exit
+    pap = 0
+    do concurrent (j = 1:n, i = 1:n) reduce(+:pap)
+      ap(i, j) = 4 * p(i, j) - p(i-1, j) - p(i+1, j) - p(i, j-1) - p(i, j+1)
+      pap = pap + p(i, j) * ap(i, j)
+    end do
+    alpha = rr / pap
+    rr_new = 0
+    do concurrent (j = 1:n, i = 1:n) reduce(+:rr_new)
+      x(i, j) = x(i, j) + alpha * p(i, j)
+      r(i, j) = r(i, j) - alpha * ap(i, j)
+      rr_new = rr_new + r(i, j) * r(i, j)
+    end do
+    beta = rr_new / rr
+    rr = rr_new
+    do concurrent (j = 1:n, i = 1:n)
+      p(i, j) = r(i, j) + beta * p(i, j)
+    end do
+    done = it
+  end do
+#else
   !$acc data copyin(r, p) create(ap) copy(x)
   do it = 1, iters
     if (.not. fixed .and. sqrt(rr / bb) < tol) exit
@@ -95,6 +141,7 @@ program cg_acc
     done = it
   end do
   !$acc end data
+#endif
   call system_clock(c1)
   t = real(c1 - c0, dp) / real(rate, dp)
 
