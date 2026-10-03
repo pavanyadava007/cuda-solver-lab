@@ -1,5 +1,7 @@
 # cuda-solver-lab
 
+Results page with plots: https://huggingface.co/spaces/pavanyadava07/cuda-solver-lab - author: Pavan Yadav Annappa (MIT licence).
+
 Conjugate Gradient and Jacobi solvers for the 2D Poisson equation, written as a
 GPU performance study: a serial C++ reference, OpenMP, eight hand-written CUDA
 variants (CSR scalar / vector SpMV, matrix-free stencil, warp-shuffle
