@@ -4,3 +4,4 @@ __pycache__/
 *.ncu-rep
 *.nsys-rep
 *.sqlite
+site/
