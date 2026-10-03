@@ -1,0 +1,6 @@
+==PROF== Connected to process 726098 (/home/ec2-user/workspace/cuda-solver-lab/build/cg_cuda)
+==PROF== Profiling "fused_update_p_spmv_dot": 0%....50%....100% - 40 passes
+date,device,impl,variant,n,unknowns,nnz,threads,mode,iters,time_s,ms_per_iter,model_bytes_per_iter,eff_gbs,gflops,rel_res_true,max_err_analytic,max_err_vs_ref,launches_per_iter
+2026-10-03,NVIDIA L4,cuda,fused,4096,16777216,83869696,0,fixed,10,6.131491e-02,6.131491e+00,1.342177e+09,218.8990,54.7194,3.458e+01,1.892e-01,-1.000e+00,2
+==PROF== Disconnected from process 726098
+==PROF== Report: /home/ec2-user/workspace/cuda-solver-lab/results/ncu/fused_p_spmv_dot.ncu-rep

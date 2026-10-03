@@ -1,0 +1,6 @@
+==PROF== Connected to process 726660 (/home/ec2-user/workspace/cuda-solver-lab/build/cg_cuda)
+==PROF== Profiling "csrmv_v3_kernel": 0%....50%....100% - 40 passes
+date,device,impl,variant,n,unknowns,nnz,threads,mode,iters,time_s,ms_per_iter,model_bytes_per_iter,eff_gbs,gflops,rel_res_true,max_err_analytic,max_err_vs_ref,launches_per_iter
+2026-10-03,NVIDIA L4,cuda,cusparse,4096,16777216,83869696,0,fixed,10,1.396060e-01,1.396060e+01,3.221029e+09,230.7228,24.0327,3.458e+01,1.892e-01,-1.000e+00,9
+==PROF== Disconnected from process 726660
+==PROF== Report: /home/ec2-user/workspace/cuda-solver-lab/results/ncu/cusparse_spmv.ncu-rep

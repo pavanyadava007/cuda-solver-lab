@@ -1,0 +1,5 @@
+========= COMPUTE-SANITIZER
+date,device,impl,variant,n,unknowns,nnz,threads,mode,iters,time_s,ms_per_iter,model_bytes_per_iter,eff_gbs,gflops,rel_res_true,max_err_analytic,max_err_vs_ref,launches_per_iter
+2026-10-03,NVIDIA L4,cuda,fused_graph,63,3969,19593,0,tol,190,1.406197e+01,7.401035e+01,3.175200e+05,0.0043,0.0011,6.576e-09,2.271e-05,-1.000e+00,0
+CHECK fused_graph    PASS  rel_res_true=6.58e-09  max_err=2.271e-05 (bound 1.066e-04)  vs_cpu=-1.00e+00  iters=190
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

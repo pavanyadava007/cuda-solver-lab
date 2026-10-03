@@ -1,0 +1,11 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+74.5,30007746,110,272797.7,272574.5,263807,288670,2441.5,"void cusparse::csrmv_v3_kernel<std::integral_constant<bool, (bool)0>, int, int, double, double, double, double, void>(cusparse::KernelCoeffs<T7>, const T3 *, const T2 *, const T3 *, const T4 *, T2, int, int, const T5 *, T6 *, T3 *, T7 *)"
+10.6,4256045,330,12897.1,12512.0,12128,17536,753.5,"void axpy_kernel_ref<double, double>(cublasAxpyParamsRef<T1, T1, T2>)"
+6.5,2610804,220,11867.3,12640.0,10304,14560,1158.0,"void dot_kernel<double, (int)128, (int)0, cublasDotParams<cublasGemvTensor<const double>, cublasGemvTensorStridedBatched<double>>>(T4)"
+2.8,1117210,110,10156.5,10128.0,8960,11136,360.4,"void scal_kernel_ref<double, double>(cublasScalParamsRef<T1, T2>)"
+2.2,874298,110,7948.2,7872.0,7776,8992,261.2,"void cusparse::vector_scalar_multiply_kernel<(int)256, cusparse::AlignedVectorScalarMultiplyPolicy, int, double, double>(cusparse::KernelCoeff<T5>, T3, T4 *)"
+1.4,561724,220,2553.3,2624.0,2336,3040,178.3,"void reduce_1Block_kernel<double, (int)128, (int)7, cublasGemvTensorStridedBatched<double>, cublasGemvTensor<double>, cublasGemvTensor<double>>(const T1 *, T1, T4, int, const T1 *, T1, T5, T6, cublasPointerMode_t, cublasLtEpilogue_t, cublasGemvTensorStridedBatched<const biasType<T6::value_type, T1>::type>)"
+1.2,497532,110,4523.0,4352.0,4320,11519,732.9,"void cusparse::<unnamed>::csr_partition_kernel<int, int>(const T1 *, T2, T1, T1, T2, T2 *, T2)"
+0.4,167295,110,1520.9,1504.0,1408,1600,40.6,cgk::lib_beta(cgk::Scalars *)
+0.4,153151,110,1392.3,1376.0,1344,1600,52.9,cgk::lib_alpha(cgk::Scalars *)
+0.1,21600,2,10800.0,10800.0,10688,10912,158.4,"void cgk::dot_finalize<(cgk::Finalize)0>(long, const double *, const double *, cgk::GridReduce, cgk::Scalars *)"

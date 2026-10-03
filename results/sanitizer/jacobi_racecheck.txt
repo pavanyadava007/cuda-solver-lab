@@ -1,0 +1,9 @@
+========= COMPUTE-SANITIZER
+CHECK jacobi naive        PASS max_diff_vs_cpu=0.000e+00 after 20 sweeps (n=67)
+CHECK jacobi smem_tile    PASS max_diff_vs_cpu=0.000e+00 after 20 sweeps (n=67)
+CHECK jacobi regs_stream  PASS max_diff_vs_cpu=0.000e+00 after 20 sweeps (n=67)
+date,device,impl,kernel,n,sweeps,time_s,ms_per_sweep,mlups,model_bytes_per_point,eff_gbs,max_diff_vs_cpu
+2026-10-03,NVIDIA L4,cuda,naive,67,20,8.929344e-03,4.464672e-01,10.05,24,0.241,0.000e+00
+2026-10-03,NVIDIA L4,cuda,smem_tile,67,20,1.190389e-01,5.951947e+00,0.75,24,0.018,0.000e+00
+2026-10-03,NVIDIA L4,cuda,regs_stream,67,20,4.111360e-03,2.055680e-01,21.84,24,0.524,0.000e+00
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

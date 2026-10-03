@@ -1,0 +1,9 @@
+========= COMPUTE-SANITIZER
+CHECK jacobi naive        PASS max_diff_vs_cpu=0.000e+00 after 20 sweeps (n=67)
+CHECK jacobi smem_tile    PASS max_diff_vs_cpu=0.000e+00 after 20 sweeps (n=67)
+CHECK jacobi regs_stream  PASS max_diff_vs_cpu=0.000e+00 after 20 sweeps (n=67)
+date,device,impl,kernel,n,sweeps,time_s,ms_per_sweep,mlups,model_bytes_per_point,eff_gbs,max_diff_vs_cpu
+2026-10-03,NVIDIA L4,cuda,naive,67,20,5.099520e-04,2.549760e-02,176.06,24,4.225,0.000e+00
+2026-10-03,NVIDIA L4,cuda,smem_tile,67,20,5.027840e-04,2.513920e-02,178.57,24,4.286,0.000e+00
+2026-10-03,NVIDIA L4,cuda,regs_stream,67,20,2.121600e-03,1.060800e-01,42.32,24,1.016,0.000e+00
+========= ERROR SUMMARY: 0 errors
