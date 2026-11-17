@@ -1,0 +1,76 @@
+name: GPU Simulator
+
+# Optional, non-required check. The hosted runners have no GPU, so this runs
+# the CPU and CUDA ctest suite on a simulated NVIDIA H100
+# (https://github.com/pantheongpu/pantheonsim). A simulator has no timing
+# model and cannot reproduce hardware-specific behavior, so it complements
+# real-GPU testing and does not replace it.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/**"
+      - "include/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests (CUDA 13.0 and simulated H100)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@a1b9d4237411f9b2b0e0bb895b4d83377f336a7b # v0.1.9
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+          library-path: "false"
+
+      # CMakeLists.txt hardcodes sm_89 (L4). 90-virtual embeds PTX only, which
+      # the simulator runs. The simulator needs a shared CUDA runtime. The
+      # Fortran OpenACC and nvfortran solvers need other compilers and are off.
+      - name: Configure
+        run: |
+          sed -i 's/set(CMAKE_CUDA_ARCHITECTURES 89)/set(CMAKE_CUDA_ARCHITECTURES 90-virtual)/' CMakeLists.txt
+          grep -q 'CMAKE_CUDA_ARCHITECTURES 90-virtual' CMakeLists.txt
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared \
+            -DBUILD_OPENACC=OFF \
+            -DBUILD_NVFORTRAN=OFF
+
+      - name: Build
+        run: vgpu run --preload cmake --build build -j3 --target cg_serial cg_omp cg_cuda jacobi
+
+      # Each CUDA variant prints a "CHECK <name> PASS" line after comparing
+      # against the CPU reference and the analytic solution. Require that
+      # ctest passed all 6 tests and that those lines are present, with no
+      # FAIL or CUDA error anywhere.
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          vgpu run ctest --test-dir build --output-on-failure --no-tests=error -V | tee ctest.log
+          grep -q "100% tests passed, 0 tests failed out of 6" ctest.log
+          passes=$(grep -c "CHECK .* PASS" ctest.log || true)
+          echo "CHECK PASS lines: $passes"
+          test "$passes" -ge 2
+          if grep -Ei "CHECK .* FAIL|cuda error|cublas error|cusparse error|skipped" ctest.log; then
+            echo "::error::a check failed or was skipped"
+            exit 1
+          fi
